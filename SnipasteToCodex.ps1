@@ -70,6 +70,7 @@ public sealed class SnipasteToCodexContext : ApplicationContext
     private readonly Timer deliveryTimer;
     private readonly Timer expiryTimer;
     private readonly Timer voiceToggleTimer;
+    private readonly Timer screenshotTimer;
     private readonly NotifyIcon tray;
     private readonly LowLevelKeyboardProc keyboardProc;
     private readonly LowLevelMouseProc mouseProc;
@@ -84,10 +85,13 @@ public sealed class SnipasteToCodexContext : ApplicationContext
     private readonly string logPath;
     private readonly string queueDir;
     private readonly string settingsPath;
+    private readonly string screenshotSettingsPath;
     private readonly string voiceActionSettingsPath;
     private readonly ToolStripMenuItem[] voiceButtonItems;
+    private readonly ToolStripMenuItem[] screenshotButtonItems;
     private readonly ToolStripMenuItem[] voiceActionItems;
     private int voiceMouseButton;
+    private int screenshotMouseButton;
     private bool sendAfterDictation;
 
     public SnipasteToCodexContext()
@@ -99,9 +103,12 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         logPath = Path.Combine(dataDir, "bridge.log");
         queueDir = Path.Combine(dataDir, "Queue");
         settingsPath = Path.Combine(dataDir, "settings.txt");
+        screenshotSettingsPath = Path.Combine(dataDir, "screenshot-button.txt");
         voiceActionSettingsPath = Path.Combine(dataDir, "voice-action.txt");
         Directory.CreateDirectory(queueDir);
         voiceMouseButton = LoadVoiceMouseButton();
+        screenshotMouseButton = LoadScreenshotMouseButton();
+        if (screenshotMouseButton == voiceMouseButton) screenshotMouseButton = 0;
         sendAfterDictation = LoadVoiceAction();
 
         clipboardWindow = new ClipboardWindow(this);
@@ -125,6 +132,10 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         voiceToggleTimer.Interval = 40;
         voiceToggleTimer.Tick += VoiceToggleTimerTick;
 
+        screenshotTimer = new Timer();
+        screenshotTimer.Interval = 40;
+        screenshotTimer.Tick += ScreenshotTimerTick;
+
         ContextMenuStrip menu = new ContextMenuStrip();
         ToolStripMenuItem pauseItem = new ToolStripMenuItem("Pause");
         pauseItem.Click += delegate {
@@ -141,6 +152,13 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         voiceButtonItems[2] = CreateVoiceButtonItem("Mouse Forward (XButton2)", XBUTTON2);
         voiceMenu.DropDownItems.AddRange(voiceButtonItems);
         menu.Items.Add(voiceMenu);
+        ToolStripMenuItem screenshotMenu = new ToolStripMenuItem("Snipaste side button");
+        screenshotButtonItems = new ToolStripMenuItem[3];
+        screenshotButtonItems[0] = CreateScreenshotButtonItem("Off", 0);
+        screenshotButtonItems[1] = CreateScreenshotButtonItem("Mouse Back (XButton1)", XBUTTON1);
+        screenshotButtonItems[2] = CreateScreenshotButtonItem("Mouse Forward (XButton2)", XBUTTON2);
+        screenshotMenu.DropDownItems.AddRange(screenshotButtonItems);
+        menu.Items.Add(screenshotMenu);
         ToolStripMenuItem actionMenu = new ToolStripMenuItem("Second press action");
         voiceActionItems = new ToolStripMenuItem[2];
         voiceActionItems[0] = CreateVoiceActionItem("Transcribe to composer", false);
@@ -169,9 +187,11 @@ public sealed class SnipasteToCodexContext : ApplicationContext
             throw new InvalidOperationException("Unable to install the mouse side-button observer.");
 
         UpdateVoiceButtonChecks();
+        UpdateScreenshotButtonChecks();
         UpdateVoiceActionChecks();
         UpdateTrayText();
         Log("Started in silent queue mode; voice side button: " + voiceMouseButton +
+            "; screenshot side button: " + screenshotMouseButton +
             "; second press sends: " + sendAfterDictation + ".");
     }
 
@@ -187,6 +207,7 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         deliveryTimer.Dispose();
         expiryTimer.Dispose();
         voiceToggleTimer.Dispose();
+        screenshotTimer.Dispose();
         Log("Stopped.");
         base.ExitThreadCore();
     }
@@ -206,16 +227,22 @@ public sealed class SnipasteToCodexContext : ApplicationContext
 
     private IntPtr MouseHookCallback(int code, IntPtr wParam, IntPtr lParam)
     {
-        if (code >= 0 && !paused && voiceMouseButton != 0 &&
+        if (code >= 0 && !paused &&
             (wParam.ToInt32() == WM_XBUTTONDOWN || wParam.ToInt32() == WM_XBUTTONUP))
         {
             MSLLHOOKSTRUCT info = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(
                 lParam, typeof(MSLLHOOKSTRUCT));
             int button = (int)((info.mouseData >> 16) & 0xffff);
-            if (button == voiceMouseButton)
+            if (voiceMouseButton != 0 && button == voiceMouseButton)
             {
                 if (wParam.ToInt32() == WM_XBUTTONDOWN && !voiceToggleTimer.Enabled)
                     voiceToggleTimer.Start();
+                return (IntPtr)1;
+            }
+            if (screenshotMouseButton != 0 && button == screenshotMouseButton)
+            {
+                if (wParam.ToInt32() == WM_XBUTTONDOWN && !screenshotTimer.Enabled)
+                    screenshotTimer.Start();
                 return (IntPtr)1;
             }
         }
@@ -228,6 +255,12 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         item.Tag = button;
         item.Click += delegate {
             voiceMouseButton = (int)item.Tag;
+            if (voiceMouseButton != 0 && screenshotMouseButton == voiceMouseButton)
+            {
+                screenshotMouseButton = 0;
+                SaveScreenshotMouseButton();
+                UpdateScreenshotButtonChecks();
+            }
             File.WriteAllText(settingsPath, voiceMouseButton.ToString(), Encoding.ASCII);
             UpdateVoiceButtonChecks();
             Log("Voice side button changed to: " + voiceMouseButton + ".");
@@ -247,6 +280,45 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         }
         catch { }
         return XBUTTON2;
+    }
+
+    private ToolStripMenuItem CreateScreenshotButtonItem(string text, int button)
+    {
+        ToolStripMenuItem item = new ToolStripMenuItem(text);
+        item.Tag = button;
+        item.Click += delegate {
+            screenshotMouseButton = (int)item.Tag;
+            if (screenshotMouseButton != 0 && voiceMouseButton == screenshotMouseButton)
+            {
+                voiceMouseButton = 0;
+                File.WriteAllText(settingsPath, voiceMouseButton.ToString(), Encoding.ASCII);
+                UpdateVoiceButtonChecks();
+            }
+            SaveScreenshotMouseButton();
+            UpdateScreenshotButtonChecks();
+            Log("Screenshot side button changed to: " + screenshotMouseButton + ".");
+        };
+        return item;
+    }
+
+    private int LoadScreenshotMouseButton()
+    {
+        try
+        {
+            int value;
+            if (File.Exists(screenshotSettingsPath) &&
+                int.TryParse(File.ReadAllText(screenshotSettingsPath).Trim(), out value) &&
+                value >= 0 && value <= 2)
+                return value;
+        }
+        catch { }
+        return XBUTTON1;
+    }
+
+    private void SaveScreenshotMouseButton()
+    {
+        File.WriteAllText(screenshotSettingsPath,
+            screenshotMouseButton.ToString(), Encoding.ASCII);
     }
 
     private ToolStripMenuItem CreateVoiceActionItem(string text, bool send)
@@ -281,6 +353,13 @@ public sealed class SnipasteToCodexContext : ApplicationContext
             voiceButtonItems[i].Checked = ((int)voiceButtonItems[i].Tag == voiceMouseButton);
     }
 
+    private void UpdateScreenshotButtonChecks()
+    {
+        for (int i = 0; i < screenshotButtonItems.Length; i++)
+            screenshotButtonItems[i].Checked =
+                ((int)screenshotButtonItems[i].Tag == screenshotMouseButton);
+    }
+
     private void UpdateVoiceActionChecks()
     {
         for (int i = 0; i < voiceActionItems.Length; i++)
@@ -301,6 +380,20 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         catch (Exception error)
         {
             Log("Unable to invoke Codex dictation: " + error.Message);
+        }
+    }
+
+    private void ScreenshotTimerTick(object sender, EventArgs e)
+    {
+        screenshotTimer.Stop();
+        try
+        {
+            if (!SendF1()) throw new InvalidOperationException("Windows did not accept F1.");
+            Log("Snipaste screenshot invoked from the mouse side button.");
+        }
+        catch (Exception error)
+        {
+            Log("Unable to invoke Snipaste screenshot: " + error.Message);
         }
     }
 
@@ -537,6 +630,14 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         inputs[1] = INPUT.Key(0x56, 0);
         inputs[2] = INPUT.Key(0x56, KEYEVENTF_KEYUP);
         inputs[3] = INPUT.Key(0x11, KEYEVENTF_KEYUP);
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT))) == inputs.Length;
+    }
+
+    private static bool SendF1()
+    {
+        INPUT[] inputs = new INPUT[2];
+        inputs[0] = INPUT.Key(VK_F1, 0);
+        inputs[1] = INPUT.Key(VK_F1, KEYEVENTF_KEYUP);
         return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT))) == inputs.Length;
     }
 

@@ -39,12 +39,15 @@ powershell.exe -ExecutionPolicy Bypass -File .\SnipasteToCodex.ps1 -Install
 4. 主动回到 Codex，排队的图片会依次粘贴到当前输入框。
 5. 输入统一要求并自行发送。
 
+默认也可以直接按鼠标“后退”侧键（`XButton1`）启动 Snipaste，键盘 `F1` 仍然有效。右键托盘图标，在 `Snipaste side button` 中可以更换或关闭截图侧键。
+
 ### 后台语音输入
 
 - 默认按鼠标“前进”侧键（`XButton2`），可在其他软件中直接开始 Codex 听写；再按一次完成听写。
 - 整个过程通过 Windows 的辅助功能接口调用当前 Codex 对话里的真实听写按钮，不会把 Codex 切到前台。
 - 右键系统托盘中的程序图标，可以改用“后退”侧键（`XButton1`）或关闭这项功能。
 - 托盘菜单中的 `Second press action` 可以选择第二下是仅转录到输入框，还是转录后直接发送；设置会在重启后保留。
+- 截图和语音不能占用同一个侧键；选择冲突时，程序会自动关闭另一个绑定。
 - Codex 需要保持运行，并停留在一个含输入框的对话页面；首次使用麦克风时，仍需按 Windows/Codex 的提示授予权限。
 
 ## 自检与卸载
