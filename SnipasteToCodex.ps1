@@ -22,10 +22,12 @@ if ($Install) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $installedScript -Force
     }
 
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
+    Unregister-ScheduledTask -TaskName 'SnipasteToCodex' -Confirm:$false -ErrorAction SilentlyContinue
+    $taskArguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $installedScript + '"'
+    $shortcutShell = New-Object -ComObject WScript.Shell
+    $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $windowsPowerShell
-    $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $installedScript + '"'
+    $shortcut.Arguments = $taskArguments
     $shortcut.WorkingDirectory = $installDir
     $shortcut.Description = 'Paste annotated Snipaste captures into the current Codex chat'
     $shortcut.Save()
@@ -33,10 +35,8 @@ if ($Install) {
     $alreadyRunning = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
         Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*SnipasteToCodex.ps1*' }
     if (-not $alreadyRunning) {
-        Start-Process -FilePath $windowsPowerShell -WindowStyle Hidden -ArgumentList @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-            '-File', ('"' + $installedScript + '"')
-        )
+        $shell = New-Object -ComObject Shell.Application
+        $shell.ShellExecute($windowsPowerShell, $taskArguments, $installDir, 'open', 0)
     }
 
     "Installed: $installedScript"
@@ -51,6 +51,7 @@ if ($Uninstall) {
     if (Test-Path -LiteralPath $shortcutPath) {
         Remove-Item -LiteralPath $shortcutPath -Force
     }
+    Unregister-ScheduledTask -TaskName 'SnipasteToCodex' -Confirm:$false -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $installedScript) {
         Remove-Item -LiteralPath $installedScript -Force
     }
@@ -477,12 +478,16 @@ if ($SelfTest) {
     $queueProbe = Join-Path $queueDir '.write-test'
     [IO.File]::WriteAllText($queueProbe, 'ok')
     [IO.File]::Delete($queueProbe)
+    $bridgeProcess = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
+        Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*SnipasteToCodex.ps1*' }
     [pscustomobject]@{
         CodexWindowFound = ($codex -ne [IntPtr]::Zero)
         CodexWindowHandle = ('0x{0:X}' -f $codex.ToInt64())
         SnipasteRunning = ($null -ne $snipaste)
         QueueWritable = $true
         QueuedImages = @(Get-ChildItem -LiteralPath $queueDir -Filter '*.png' -File).Count
+        BackgroundRunning = ($null -ne $bridgeProcess)
+        StartupShortcutReady = (Test-Path -LiteralPath $shortcutPath)
     }
     exit
 }
