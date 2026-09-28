@@ -53,7 +53,7 @@ Run the same script with `-SelfTest` and require all of the following:
 
 If verification fails, report the failed check and retry only the corresponding step once. Do not repeatedly reinstall everything.
 
-Explain the final behavior: `F1` starts Snipaste; clicking copy/finish silently queues the annotated image; the bridge never brings Codex forward; queued images paste in order when the user returns to Codex; screenshots alone do not send a message automatically. The mouse forward side button (`XButton2`) starts the real Codex dictation control globally by default; pressing it again invokes Codex's `transcribe and send` action. The user can right-click the tray icon to select the back side button (`XButton1`) or disable voice control. Codex must be running on a chat page, and first-use microphone permission may still require interaction.
+Explain the final behavior: `F1` starts Snipaste; clicking copy/finish silently queues the annotated image; the bridge never brings Codex forward; queued images paste in order when the user returns to Codex; screenshots alone do not send a message automatically. The mouse forward side button (`XButton2`) starts the real Codex dictation control globally by default. In the tray menu, the user can choose whether the second press transcribes into the composer or transcribes and sends immediately; this choice persists across restarts. The user can also select the back side button (`XButton1`) or disable voice control. Codex must be running on a chat page, and first-use microphone permission may still require interaction.
 
 ## Update or uninstall
 

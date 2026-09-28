@@ -84,8 +84,11 @@ public sealed class SnipasteToCodexContext : ApplicationContext
     private readonly string logPath;
     private readonly string queueDir;
     private readonly string settingsPath;
+    private readonly string voiceActionSettingsPath;
     private readonly ToolStripMenuItem[] voiceButtonItems;
+    private readonly ToolStripMenuItem[] voiceActionItems;
     private int voiceMouseButton;
+    private bool sendAfterDictation;
 
     public SnipasteToCodexContext()
     {
@@ -96,8 +99,10 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         logPath = Path.Combine(dataDir, "bridge.log");
         queueDir = Path.Combine(dataDir, "Queue");
         settingsPath = Path.Combine(dataDir, "settings.txt");
+        voiceActionSettingsPath = Path.Combine(dataDir, "voice-action.txt");
         Directory.CreateDirectory(queueDir);
         voiceMouseButton = LoadVoiceMouseButton();
+        sendAfterDictation = LoadVoiceAction();
 
         clipboardWindow = new ClipboardWindow(this);
         if (!AddClipboardFormatListener(clipboardWindow.Handle))
@@ -136,6 +141,12 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         voiceButtonItems[2] = CreateVoiceButtonItem("Mouse Forward (XButton2)", XBUTTON2);
         voiceMenu.DropDownItems.AddRange(voiceButtonItems);
         menu.Items.Add(voiceMenu);
+        ToolStripMenuItem actionMenu = new ToolStripMenuItem("Second press action");
+        voiceActionItems = new ToolStripMenuItem[2];
+        voiceActionItems[0] = CreateVoiceActionItem("Transcribe to composer", false);
+        voiceActionItems[1] = CreateVoiceActionItem("Transcribe and send", true);
+        actionMenu.DropDownItems.AddRange(voiceActionItems);
+        menu.Items.Add(actionMenu);
         menu.Items.Add(new ToolStripSeparator());
         ToolStripMenuItem exitItem = new ToolStripMenuItem("Exit");
         exitItem.Click += delegate { ExitThread(); };
@@ -158,8 +169,10 @@ public sealed class SnipasteToCodexContext : ApplicationContext
             throw new InvalidOperationException("Unable to install the mouse side-button observer.");
 
         UpdateVoiceButtonChecks();
+        UpdateVoiceActionChecks();
         UpdateTrayText();
-        Log("Started in silent queue mode; voice side button: " + voiceMouseButton + ".");
+        Log("Started in silent queue mode; voice side button: " + voiceMouseButton +
+            "; second press sends: " + sendAfterDictation + ".");
     }
 
     protected override void ExitThreadCore()
@@ -236,10 +249,42 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         return XBUTTON2;
     }
 
+    private ToolStripMenuItem CreateVoiceActionItem(string text, bool send)
+    {
+        ToolStripMenuItem item = new ToolStripMenuItem(text);
+        item.Tag = send;
+        item.Click += delegate {
+            sendAfterDictation = (bool)item.Tag;
+            File.WriteAllText(voiceActionSettingsPath,
+                sendAfterDictation ? "send" : "draft", Encoding.ASCII);
+            UpdateVoiceActionChecks();
+            Log("Second voice press sends: " + sendAfterDictation + ".");
+        };
+        return item;
+    }
+
+    private bool LoadVoiceAction()
+    {
+        try
+        {
+            if (File.Exists(voiceActionSettingsPath))
+                return !string.Equals(File.ReadAllText(voiceActionSettingsPath).Trim(),
+                    "draft", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { }
+        return true;
+    }
+
     private void UpdateVoiceButtonChecks()
     {
         for (int i = 0; i < voiceButtonItems.Length; i++)
             voiceButtonItems[i].Checked = ((int)voiceButtonItems[i].Tag == voiceMouseButton);
+    }
+
+    private void UpdateVoiceActionChecks()
+    {
+        for (int i = 0; i < voiceActionItems.Length; i++)
+            voiceActionItems[i].Checked = ((bool)voiceActionItems[i].Tag == sendAfterDictation);
     }
 
     private void VoiceToggleTimerTick(object sender, EventArgs e)
@@ -248,7 +293,7 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         try
         {
             string controlName;
-            if (TryInvokeCodexDictation(out controlName))
+            if (TryInvokeCodexDictation(sendAfterDictation, out controlName))
                 Log("Codex dictation invoked in background: " + controlName + ".");
             else
                 Log("Codex dictation button was not found. Keep the current chat open.");
@@ -259,10 +304,10 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         }
     }
 
-    public static bool TryInvokeCodexDictation(out string controlName)
+    public static bool TryInvokeCodexDictation(bool sendAfterDictation, out string controlName)
     {
         controlName = null;
-        AutomationElement button = FindCodexDictationButton();
+        AutomationElement button = FindCodexDictationButton(sendAfterDictation);
         if (button == null) return false;
         object pattern;
         if (!button.TryGetCurrentPattern(InvokePattern.Pattern, out pattern)) return false;
@@ -273,10 +318,10 @@ public sealed class SnipasteToCodexContext : ApplicationContext
 
     public static bool HasCodexDictationButton()
     {
-        return FindCodexDictationButton() != null;
+        return FindCodexDictationButton(true) != null;
     }
 
-    private static AutomationElement FindCodexDictationButton()
+    private static AutomationElement FindCodexDictationButton(bool sendAfterDictation)
     {
         IntPtr codexWindow = FindCodexWindow();
         if (codexWindow == IntPtr.Zero) return null;
@@ -287,16 +332,17 @@ public sealed class SnipasteToCodexContext : ApplicationContext
                 TreeScope.Descendants,
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
 
-            // While recording, Codex exposes both a cancel/stop button and a
-            // "transcribe and send" button. Always prefer the latter so the
-            // second side-button press produces text instead of discarding it.
+            // While recording, Codex exposes separate stop-to-draft and
+            // transcribe-and-send controls. Pick the configured completion.
             foreach (AutomationElement button in buttons)
             {
                 string name = button.Current.Name ?? string.Empty;
                 string lower = name.ToLowerInvariant();
-                bool isFinish = name.IndexOf("\u8f6c\u5f55\u5e76\u53d1\u9001",
-                        StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    lower.IndexOf("transcribe and send", StringComparison.Ordinal) >= 0;
+                bool isFinish = sendAfterDictation
+                    ? name.IndexOf("\u8f6c\u5f55\u5e76\u53d1\u9001",
+                          StringComparison.OrdinalIgnoreCase) >= 0 ||
+                      lower.IndexOf("transcribe and send", StringComparison.Ordinal) >= 0
+                    : name == "\u505c\u6b62\u542c\u5199" || lower == "stop dictation";
                 if (!isFinish || !button.Current.IsEnabled) continue;
 
                 object pattern;
