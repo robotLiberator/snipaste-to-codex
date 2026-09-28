@@ -286,16 +286,30 @@ public sealed class SnipasteToCodexContext : ApplicationContext
             AutomationElementCollection buttons = root.FindAll(
                 TreeScope.Descendants,
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+
+            // While recording, Codex exposes both a cancel/stop button and a
+            // "transcribe and send" button. Always prefer the latter so the
+            // second side-button press produces text instead of discarding it.
+            foreach (AutomationElement button in buttons)
+            {
+                string name = button.Current.Name ?? string.Empty;
+                string lower = name.ToLowerInvariant();
+                bool isFinish = name.IndexOf("\u8f6c\u5f55\u5e76\u53d1\u9001",
+                        StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    lower.IndexOf("transcribe and send", StringComparison.Ordinal) >= 0;
+                if (!isFinish || !button.Current.IsEnabled) continue;
+
+                object pattern;
+                if (!button.TryGetCurrentPattern(InvokePattern.Pattern, out pattern)) continue;
+                return button;
+            }
+
             foreach (AutomationElement button in buttons)
             {
                 string name = button.Current.Name ?? string.Empty;
                 string lower = name.ToLowerInvariant();
                 bool isDictation = name == "\u542c\u5199" || name == "\u5f00\u59cb\u542c\u5199" ||
-                    name.IndexOf("\u505c\u6b62\u542c\u5199", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    name.IndexOf("\u53d6\u6d88\u542c\u5199", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    lower == "dictation" || lower == "start dictation" ||
-                    lower.IndexOf("stop dictation", StringComparison.Ordinal) >= 0 ||
-                    lower.IndexOf("cancel dictation", StringComparison.Ordinal) >= 0;
+                    lower == "dictation" || lower == "start dictation";
                 if (!isDictation || !button.Current.IsEnabled) continue;
 
                 object pattern;

@@ -41,7 +41,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\SnipasteToCodex.ps1 -Install
 
 ### 后台语音输入
 
-- 默认按鼠标“前进”侧键（`XButton2`），可在其他软件中直接开始 Codex 听写；再按一次结束听写。
+- 默认按鼠标“前进”侧键（`XButton2`），可在其他软件中直接开始 Codex 听写；再按一次会执行 Codex 的“转录并发送”。
 - 整个过程通过 Windows 的辅助功能接口调用当前 Codex 对话里的真实听写按钮，不会把 Codex 切到前台。
 - 右键系统托盘中的程序图标，可以改用“后退”侧键（`XButton1`）或关闭这项功能。
 - Codex 需要保持运行，并停留在一个含输入框的对话页面；首次使用麦克风时，仍需按 Windows/Codex 的提示授予权限。
