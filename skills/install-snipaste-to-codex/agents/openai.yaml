@@ -1,0 +1,4 @@
+interface:
+  display_name: "Install Snipaste to Codex"
+  short_description: "Install and verify the Windows screenshot bridge"
+  default_prompt: "Use $install-snipaste-to-codex to install and verify the Snipaste-to-Codex bridge on this Windows PC."

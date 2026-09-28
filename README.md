@@ -10,6 +10,17 @@
 
 当前版本不会安装或捆绑 Snipaste。
 
+## 交给 Codex 安装
+
+把下面这句话发给 Codex：
+
+```text
+请安装并使用这个 Skill，帮我完成 Snipaste to Codex 的安装和自检：
+https://github.com/robotLiberator/snipaste-to-codex/tree/main/skills/install-snipaste-to-codex
+```
+
+这个 Skill 会在缺少 Snipaste 时优先使用 Windows Package Manager 的官方来源安装，并在完成后检查后台程序、截图队列和开机启动项。
+
 ## 安装
 
 在 Windows PowerShell 中运行：
