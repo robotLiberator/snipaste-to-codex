@@ -13,55 +13,8 @@ $ErrorActionPreference = 'Stop'
 
 $installDir = Join-Path $env:LOCALAPPDATA 'SnipasteToCodex'
 $installedScript = Join-Path $installDir 'SnipasteToCodex.ps1'
+$bridgeExe = Join-Path $installDir 'SnipasteToCodex.exe'
 $shortcutPath = Join-Path ([Environment]::GetFolderPath('Startup')) 'Snipaste to Codex.lnk'
-$windowsPowerShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-
-if ($Install) {
-    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-    if ([IO.Path]::GetFullPath($PSCommandPath) -ne [IO.Path]::GetFullPath($installedScript)) {
-        Copy-Item -LiteralPath $PSCommandPath -Destination $installedScript -Force
-    }
-
-    Unregister-ScheduledTask -TaskName 'SnipasteToCodex' -Confirm:$false -ErrorAction SilentlyContinue
-    $taskArguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $installedScript + '"'
-    $shortcutShell = New-Object -ComObject WScript.Shell
-    $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = $windowsPowerShell
-    $shortcut.Arguments = $taskArguments
-    $shortcut.WorkingDirectory = $installDir
-    $shortcut.Description = 'Paste annotated Snipaste captures into the current Codex chat'
-    $shortcut.Save()
-
-    $alreadyRunning = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
-        Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*SnipasteToCodex.ps1*' }
-    if (-not $alreadyRunning) {
-        $shell = New-Object -ComObject Shell.Application
-        $shell.ShellExecute($windowsPowerShell, $taskArguments, $installDir, 'open', 0)
-    }
-
-    "Installed: $installedScript"
-    exit
-}
-
-if ($Uninstall) {
-    Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
-        Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*SnipasteToCodex.ps1*' } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-
-    if (Test-Path -LiteralPath $shortcutPath) {
-        Remove-Item -LiteralPath $shortcutPath -Force
-    }
-    Unregister-ScheduledTask -TaskName 'SnipasteToCodex' -Confirm:$false -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $installedScript) {
-        Remove-Item -LiteralPath $installedScript -Force
-    }
-    if (Test-Path -LiteralPath $installDir) {
-        [IO.Directory]::Delete($installDir, $true)
-    }
-
-    'Snipaste to Codex has been removed.'
-    exit
-}
 
 $source = @'
 using System;
@@ -73,6 +26,22 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 using Microsoft.Win32;
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main()
+    {
+        bool createdNew;
+        using (System.Threading.Mutex mutex = new System.Threading.Mutex(true, @"Local\SnipasteToCodexBridge", out createdNew))
+        {
+            if (!createdNew) return;
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new SnipasteToCodexContext());
+        }
+    }
+}
 
 public sealed class SnipasteToCodexContext : ApplicationContext
 {
@@ -468,39 +437,84 @@ public sealed class SnipasteToCodexContext : ApplicationContext
 }
 '@
 
-Add-Type -TypeDefinition $source -ReferencedAssemblies System.Windows.Forms,System.Drawing
+function Get-BridgeProcesses {
+    Get-CimInstance Win32_Process | Where-Object {
+        ($_.Name -eq 'SnipasteToCodex.exe' -and $_.ExecutablePath -eq $bridgeExe) -or
+        ($_.Name -eq 'powershell.exe' -and $_.ProcessId -ne $PID -and $_.CommandLine -like '*SnipasteToCodex.ps1*')
+    }
+}
+
+if ($Install) {
+    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+    Get-BridgeProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+    $temporaryExe = Join-Path $installDir 'SnipasteToCodex.new.exe'
+    $temporarySource = Join-Path $installDir 'SnipasteToCodex.generated.cs'
+    if (Test-Path -LiteralPath $temporaryExe) { Remove-Item -LiteralPath $temporaryExe -Force }
+    $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    if (-not (Test-Path -LiteralPath $compiler)) {
+        $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
+    }
+    [IO.File]::WriteAllText($temporarySource, $source, (New-Object Text.UTF8Encoding($false)))
+    & $compiler /nologo /target:winexe /optimize+ "/out:$temporaryExe" `
+        /reference:System.Windows.Forms.dll /reference:System.Drawing.dll $temporarySource
+    $compileExitCode = $LASTEXITCODE
+    Remove-Item -LiteralPath $temporarySource -Force
+    if ($compileExitCode -ne 0 -or -not (Test-Path -LiteralPath $temporaryExe)) {
+        throw "Unable to compile the lightweight bridge (compiler exit code $compileExitCode)."
+    }
+    Move-Item -LiteralPath $temporaryExe -Destination $bridgeExe -Force
+
+    if ([IO.Path]::GetFullPath($PSCommandPath) -ne [IO.Path]::GetFullPath($installedScript)) {
+        Copy-Item -LiteralPath $PSCommandPath -Destination $installedScript -Force
+    }
+
+    Unregister-ScheduledTask -TaskName 'SnipasteToCodex' -Confirm:$false -ErrorAction SilentlyContinue
+    $shortcutShell = New-Object -ComObject WScript.Shell
+    $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $bridgeExe
+    $shortcut.Arguments = ''
+    $shortcut.WorkingDirectory = $installDir
+    $shortcut.Description = 'Paste annotated Snipaste captures into the current Codex chat'
+    $shortcut.Save()
+
+    $shell = New-Object -ComObject Shell.Application
+    $shell.ShellExecute($bridgeExe, '', $installDir, 'open', 0)
+    "Installed lightweight bridge: $bridgeExe"
+    exit
+}
+
+if ($Uninstall) {
+    Get-BridgeProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    if (Test-Path -LiteralPath $shortcutPath) { Remove-Item -LiteralPath $shortcutPath -Force }
+    Unregister-ScheduledTask -TaskName 'SnipasteToCodex' -Confirm:$false -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $installDir) { [IO.Directory]::Delete($installDir, $true) }
+    'Snipaste to Codex has been removed.'
+    exit
+}
 
 if ($SelfTest) {
-    $codex = [SnipasteToCodexContext]::FindCodexWindow()
+    $codex = Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | Where-Object {
+        try { $_.MainModule.FileName -like '*OpenAI.Codex_*' } catch { $false }
+    } | Select-Object -First 1
     $snipaste = Get-Process -Name Snipaste -ErrorAction SilentlyContinue
     $queueDir = Join-Path $installDir 'Queue'
     New-Item -ItemType Directory -Force -Path $queueDir | Out-Null
     $queueProbe = Join-Path $queueDir '.write-test'
     [IO.File]::WriteAllText($queueProbe, 'ok')
     [IO.File]::Delete($queueProbe)
-    $bridgeProcess = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
-        Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*SnipasteToCodex.ps1*' }
+    $bridgeProcess = Get-BridgeProcesses
     [pscustomobject]@{
-        CodexWindowFound = ($codex -ne [IntPtr]::Zero)
-        CodexWindowHandle = ('0x{0:X}' -f $codex.ToInt64())
+        CodexRunning = ($null -ne $codex)
         SnipasteRunning = ($null -ne $snipaste)
         QueueWritable = $true
         QueuedImages = @(Get-ChildItem -LiteralPath $queueDir -Filter '*.png' -File).Count
         BackgroundRunning = ($null -ne $bridgeProcess)
+        LightweightExeReady = (Test-Path -LiteralPath $bridgeExe)
         StartupShortcutReady = (Test-Path -LiteralPath $shortcutPath)
     }
     exit
 }
-$createdNew = $false
-$mutex = New-Object System.Threading.Mutex($true, 'Local\SnipasteToCodexBridge', [ref]$createdNew)
-if (-not $createdNew) { exit }
 
-try {
-    [System.Windows.Forms.Application]::EnableVisualStyles()
-    [System.Windows.Forms.Application]::Run((New-Object SnipasteToCodexContext))
-}
-finally {
-    $mutex.ReleaseMutex()
-    $mutex.Dispose()
-}
+'Use -Install, -SelfTest, or -Uninstall.'
 

@@ -29,7 +29,7 @@ https://github.com/robotLiberator/snipaste-to-codex/tree/main/skills/install-sni
 powershell.exe -ExecutionPolicy Bypass -File .\SnipasteToCodex.ps1 -Install
 ```
 
-安装后程序随当前用户登录自动启动，并由 Windows Shell 独立运行，不依附于 Codex 进程。单独重启 Codex 不会关闭桥接程序；如果后台程序被手动退出，重新运行 `-Install` 即可启动。
+安装脚本会使用 Windows 自带的 C# 编译器生成一个很小的独立 EXE。安装后程序随当前用户登录自动启动，不需要常驻 PowerShell，也不依附于 Codex 进程。单独重启 Codex 不会关闭桥接程序；如果后台程序被手动退出，重新运行 `-Install` 即可启动。
 
 ## 使用
 
@@ -46,5 +46,5 @@ powershell.exe -ExecutionPolicy Bypass -File .\SnipasteToCodex.ps1 -Install
 .\SnipasteToCodex.ps1 -Uninstall
 ```
 
-所有实现均位于单个 `SnipasteToCodex.ps1` 文件中，不使用 AutoHotkey、服务器或 Codex 私有接口。
+源码和安装逻辑均位于单个 `SnipasteToCodex.ps1` 文件中。安装时会生成 `%LOCALAPPDATA%\SnipasteToCodex\SnipasteToCodex.exe`，日常只运行这个轻量程序，不使用 AutoHotkey、服务器或 Codex 私有接口。
 

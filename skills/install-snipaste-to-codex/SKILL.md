@@ -37,14 +37,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File <path-to-SnipasteToCodex
 
 The installer must remain per-user. Do not request administrator rights, weaken execution policy globally, or alter Windows security settings.
 
+The script compiles its embedded C# source with the Windows-provided .NET Framework compiler and installs a small standalone `SnipasteToCodex.exe`. PowerShell is used only during installation, self-test, update, and removal; it must not remain as the background bridge.
+
 ## Verify
 
 Run the same script with `-SelfTest` and require all of the following:
 
-- `CodexWindowFound` is true while Codex is open.
+- `CodexRunning` is true while Codex is open.
 - `SnipasteRunning` is true.
 - `QueueWritable` is true.
-- The background PowerShell process is running the installed copy under `%LOCALAPPDATA%\SnipasteToCodex`.
+- `LightweightExeReady` is true.
+- `BackgroundRunning` is true, with the installed `SnipasteToCodex.exe` running under `%LOCALAPPDATA%\SnipasteToCodex` and no persistent PowerShell bridge.
 - The startup shortcut exists in the current user's Startup folder.
 
 If verification fails, report the failed check and retry only the corresponding step once. Do not repeatedly reinstall everything.
