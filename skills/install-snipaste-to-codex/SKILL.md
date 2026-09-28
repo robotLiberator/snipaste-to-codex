@@ -1,6 +1,6 @@
 ---
 name: install-snipaste-to-codex
-description: Install, update, verify, or uninstall the Snipaste-to-Codex screenshot bridge on Windows. Use when a user wants annotated Snipaste captures queued silently and pasted into Codex when they return to the app. Do not use on macOS or Linux.
+description: Install, update, verify, or uninstall the Snipaste-to-Codex Windows bridge. Use for silent annotated-screenshot queuing or a global mouse side button that toggles Codex dictation without foreground switching. Do not use on macOS or Linux.
 ---
 
 # Install Snipaste To Codex
@@ -49,10 +49,11 @@ Run the same script with `-SelfTest` and require all of the following:
 - `LightweightExeReady` is true.
 - `BackgroundRunning` is true, with the installed `SnipasteToCodex.exe` running under `%LOCALAPPDATA%\SnipasteToCodex` and no persistent PowerShell bridge.
 - The startup shortcut exists in the current user's Startup folder.
+- `DictationControlFound` is true while Codex is showing a chat composer. This check only discovers the control and must not start the microphone.
 
 If verification fails, report the failed check and retry only the corresponding step once. Do not repeatedly reinstall everything.
 
-Explain the final behavior: `F1` starts Snipaste; clicking copy/finish silently queues the annotated image; the bridge never brings Codex forward; queued images paste in order when the user returns to Codex; no message is sent automatically.
+Explain the final behavior: `F1` starts Snipaste; clicking copy/finish silently queues the annotated image; the bridge never brings Codex forward; queued images paste in order when the user returns to Codex; no message is sent automatically. The mouse forward side button (`XButton2`) toggles the real Codex dictation control globally by default. The user can right-click the tray icon to select the back side button (`XButton1`) or disable voice control. Codex must be running on a chat page, and first-use microphone permission may still require interaction.
 
 ## Update or uninstall
 

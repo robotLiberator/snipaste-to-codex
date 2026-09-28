@@ -24,14 +24,20 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Automation;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--probe-dictation")
+        {
+            Environment.ExitCode = SnipasteToCodexContext.HasCodexDictationButton() ? 0 : 2;
+            return;
+        }
         bool createdNew;
         using (System.Threading.Mutex mutex = new System.Threading.Mutex(true, @"Local\SnipasteToCodexBridge", out createdNew))
         {
@@ -46,8 +52,13 @@ internal static class Program
 public sealed class SnipasteToCodexContext : ApplicationContext
 {
     private const int WH_KEYBOARD_LL = 13;
+    private const int WH_MOUSE_LL = 14;
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_SYSKEYDOWN = 0x0104;
+    private const int WM_XBUTTONDOWN = 0x020B;
+    private const int WM_XBUTTONUP = 0x020C;
+    private const int XBUTTON1 = 1;
+    private const int XBUTTON2 = 2;
     private const int VK_F1 = 0x70;
     private const int WM_CLIPBOARDUPDATE = 0x031D;
     private const uint CF_BITMAP = 2;
@@ -58,9 +69,12 @@ public sealed class SnipasteToCodexContext : ApplicationContext
     private readonly Timer captureTimer;
     private readonly Timer deliveryTimer;
     private readonly Timer expiryTimer;
+    private readonly Timer voiceToggleTimer;
     private readonly NotifyIcon tray;
     private readonly LowLevelKeyboardProc keyboardProc;
+    private readonly LowLevelMouseProc mouseProc;
     private IntPtr keyboardHook;
+    private IntPtr mouseHook;
     private IntPtr targetWindow;
     private IntPtr targetFocus;
     private bool armed;
@@ -69,6 +83,9 @@ public sealed class SnipasteToCodexContext : ApplicationContext
     private uint clipboardSequenceAtF1;
     private readonly string logPath;
     private readonly string queueDir;
+    private readonly string settingsPath;
+    private readonly ToolStripMenuItem[] voiceButtonItems;
+    private int voiceMouseButton;
 
     public SnipasteToCodexContext()
     {
@@ -78,7 +95,9 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         Directory.CreateDirectory(dataDir);
         logPath = Path.Combine(dataDir, "bridge.log");
         queueDir = Path.Combine(dataDir, "Queue");
+        settingsPath = Path.Combine(dataDir, "settings.txt");
         Directory.CreateDirectory(queueDir);
+        voiceMouseButton = LoadVoiceMouseButton();
 
         clipboardWindow = new ClipboardWindow(this);
         if (!AddClipboardFormatListener(clipboardWindow.Handle))
@@ -97,6 +116,10 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         expiryTimer.Interval = 120000;
         expiryTimer.Tick += delegate { Disarm("Timed out or screenshot was cancelled."); };
 
+        voiceToggleTimer = new Timer();
+        voiceToggleTimer.Interval = 40;
+        voiceToggleTimer.Tick += VoiceToggleTimerTick;
+
         ContextMenuStrip menu = new ContextMenuStrip();
         ToolStripMenuItem pauseItem = new ToolStripMenuItem("Pause");
         pauseItem.Click += delegate {
@@ -106,6 +129,13 @@ public sealed class SnipasteToCodexContext : ApplicationContext
             Disarm("Paused state changed.");
         };
         menu.Items.Add(pauseItem);
+        ToolStripMenuItem voiceMenu = new ToolStripMenuItem("Codex voice side button");
+        voiceButtonItems = new ToolStripMenuItem[3];
+        voiceButtonItems[0] = CreateVoiceButtonItem("Off", 0);
+        voiceButtonItems[1] = CreateVoiceButtonItem("Mouse Back (XButton1)", XBUTTON1);
+        voiceButtonItems[2] = CreateVoiceButtonItem("Mouse Forward (XButton2)", XBUTTON2);
+        voiceMenu.DropDownItems.AddRange(voiceButtonItems);
+        menu.Items.Add(voiceMenu);
         menu.Items.Add(new ToolStripSeparator());
         ToolStripMenuItem exitItem = new ToolStripMenuItem("Exit");
         exitItem.Click += delegate { ExitThread(); };
@@ -122,13 +152,20 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         if (keyboardHook == IntPtr.Zero)
             throw new InvalidOperationException("Unable to install the F1 observer.");
 
+        mouseProc = MouseHookCallback;
+        mouseHook = SetWindowsHookEx(WH_MOUSE_LL, mouseProc, GetModuleHandle(null), 0);
+        if (mouseHook == IntPtr.Zero)
+            throw new InvalidOperationException("Unable to install the mouse side-button observer.");
+
+        UpdateVoiceButtonChecks();
         UpdateTrayText();
-        Log("Started in silent queue mode.");
+        Log("Started in silent queue mode; voice side button: " + voiceMouseButton + ".");
     }
 
     protected override void ExitThreadCore()
     {
         if (keyboardHook != IntPtr.Zero) UnhookWindowsHookEx(keyboardHook);
+        if (mouseHook != IntPtr.Zero) UnhookWindowsHookEx(mouseHook);
         RemoveClipboardFormatListener(clipboardWindow.Handle);
         tray.Visible = false;
         tray.Dispose();
@@ -136,6 +173,7 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         captureTimer.Dispose();
         deliveryTimer.Dispose();
         expiryTimer.Dispose();
+        voiceToggleTimer.Dispose();
         Log("Stopped.");
         base.ExitThreadCore();
     }
@@ -151,6 +189,123 @@ public sealed class SnipasteToCodexContext : ApplicationContext
                 Arm();
         }
         return CallNextHookEx(keyboardHook, code, wParam, lParam);
+    }
+
+    private IntPtr MouseHookCallback(int code, IntPtr wParam, IntPtr lParam)
+    {
+        if (code >= 0 && !paused && voiceMouseButton != 0 &&
+            (wParam.ToInt32() == WM_XBUTTONDOWN || wParam.ToInt32() == WM_XBUTTONUP))
+        {
+            MSLLHOOKSTRUCT info = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(
+                lParam, typeof(MSLLHOOKSTRUCT));
+            int button = (int)((info.mouseData >> 16) & 0xffff);
+            if (button == voiceMouseButton)
+            {
+                if (wParam.ToInt32() == WM_XBUTTONDOWN && !voiceToggleTimer.Enabled)
+                    voiceToggleTimer.Start();
+                return (IntPtr)1;
+            }
+        }
+        return CallNextHookEx(mouseHook, code, wParam, lParam);
+    }
+
+    private ToolStripMenuItem CreateVoiceButtonItem(string text, int button)
+    {
+        ToolStripMenuItem item = new ToolStripMenuItem(text);
+        item.Tag = button;
+        item.Click += delegate {
+            voiceMouseButton = (int)item.Tag;
+            File.WriteAllText(settingsPath, voiceMouseButton.ToString(), Encoding.ASCII);
+            UpdateVoiceButtonChecks();
+            Log("Voice side button changed to: " + voiceMouseButton + ".");
+        };
+        return item;
+    }
+
+    private int LoadVoiceMouseButton()
+    {
+        try
+        {
+            int value;
+            if (File.Exists(settingsPath) &&
+                int.TryParse(File.ReadAllText(settingsPath).Trim(), out value) &&
+                value >= 0 && value <= 2)
+                return value;
+        }
+        catch { }
+        return XBUTTON2;
+    }
+
+    private void UpdateVoiceButtonChecks()
+    {
+        for (int i = 0; i < voiceButtonItems.Length; i++)
+            voiceButtonItems[i].Checked = ((int)voiceButtonItems[i].Tag == voiceMouseButton);
+    }
+
+    private void VoiceToggleTimerTick(object sender, EventArgs e)
+    {
+        voiceToggleTimer.Stop();
+        try
+        {
+            string controlName;
+            if (TryInvokeCodexDictation(out controlName))
+                Log("Codex dictation invoked in background: " + controlName + ".");
+            else
+                Log("Codex dictation button was not found. Keep the current chat open.");
+        }
+        catch (Exception error)
+        {
+            Log("Unable to invoke Codex dictation: " + error.Message);
+        }
+    }
+
+    public static bool TryInvokeCodexDictation(out string controlName)
+    {
+        controlName = null;
+        AutomationElement button = FindCodexDictationButton();
+        if (button == null) return false;
+        object pattern;
+        if (!button.TryGetCurrentPattern(InvokePattern.Pattern, out pattern)) return false;
+        controlName = button.Current.Name ?? string.Empty;
+        ((InvokePattern)pattern).Invoke();
+        return true;
+    }
+
+    public static bool HasCodexDictationButton()
+    {
+        return FindCodexDictationButton() != null;
+    }
+
+    private static AutomationElement FindCodexDictationButton()
+    {
+        IntPtr codexWindow = FindCodexWindow();
+        if (codexWindow == IntPtr.Zero) return null;
+        try
+        {
+            AutomationElement root = AutomationElement.FromHandle(codexWindow);
+            AutomationElementCollection buttons = root.FindAll(
+                TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+            foreach (AutomationElement button in buttons)
+            {
+                string name = button.Current.Name ?? string.Empty;
+                string lower = name.ToLowerInvariant();
+                bool isDictation = name == "\u542c\u5199" || name == "\u5f00\u59cb\u542c\u5199" ||
+                    name.IndexOf("\u505c\u6b62\u542c\u5199", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("\u53d6\u6d88\u542c\u5199", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    lower == "dictation" || lower == "start dictation" ||
+                    lower.IndexOf("stop dictation", StringComparison.Ordinal) >= 0 ||
+                    lower.IndexOf("cancel dictation", StringComparison.Ordinal) >= 0;
+                if (!isDictation || !button.Current.IsEnabled) continue;
+
+                object pattern;
+                if (!button.TryGetCurrentPattern(InvokePattern.Pattern, out pattern)) continue;
+                return button;
+            }
+        }
+        catch (ElementNotAvailableException) { }
+        catch (InvalidOperationException) { }
+        return null;
     }
 
     private void Arm()
@@ -352,6 +507,7 @@ public sealed class SnipasteToCodexContext : ApplicationContext
     }
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+    private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -360,6 +516,17 @@ public sealed class SnipasteToCodexContext : ApplicationContext
         public uint vkCode, scanCode, flags, time;
         public IntPtr dwExtraInfo;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSLLHOOKSTRUCT
+    {
+        public POINT point;
+        public uint mouseData, flags, time;
+        public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct GUITHREADINFO
@@ -421,6 +588,7 @@ public sealed class SnipasteToCodexContext : ApplicationContext
     [DllImport("user32.dll")] private static extern bool IsClipboardFormatAvailable(uint format);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern uint RegisterClipboardFormat(string format);
     [DllImport("user32.dll")] private static extern IntPtr SetWindowsHookEx(int id, LowLevelKeyboardProc callback, IntPtr module, uint threadId);
+    [DllImport("user32.dll")] private static extern IntPtr SetWindowsHookEx(int id, LowLevelMouseProc callback, IntPtr module, uint threadId);
     [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(IntPtr hook);
     [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr GetModuleHandle(string name);
@@ -455,9 +623,13 @@ if ($Install) {
     if (-not (Test-Path -LiteralPath $compiler)) {
         $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
     }
+    $frameworkDir = Split-Path -Parent $compiler
+    $uiaClient = Join-Path $frameworkDir 'WPF\UIAutomationClient.dll'
+    $uiaTypes = Join-Path $frameworkDir 'WPF\UIAutomationTypes.dll'
     [IO.File]::WriteAllText($temporarySource, $source, (New-Object Text.UTF8Encoding($false)))
-    & $compiler /nologo /target:winexe /optimize+ "/out:$temporaryExe" `
-        /reference:System.Windows.Forms.dll /reference:System.Drawing.dll $temporarySource
+    & $compiler /nologo /target:winexe /optimize+ /codepage:65001 "/out:$temporaryExe" `
+        /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
+        "/reference:$uiaClient" "/reference:$uiaTypes" $temporarySource
     $compileExitCode = $LASTEXITCODE
     Remove-Item -LiteralPath $temporarySource -Force
     if ($compileExitCode -ne 0 -or -not (Test-Path -LiteralPath $temporaryExe)) {
@@ -504,6 +676,11 @@ if ($SelfTest) {
     [IO.File]::WriteAllText($queueProbe, 'ok')
     [IO.File]::Delete($queueProbe)
     $bridgeProcess = Get-BridgeProcesses
+    $dictationControlFound = $false
+    if (Test-Path -LiteralPath $bridgeExe) {
+        $probe = Start-Process -FilePath $bridgeExe -ArgumentList '--probe-dictation' -WindowStyle Hidden -Wait -PassThru
+        $dictationControlFound = ($probe.ExitCode -eq 0)
+    }
     [pscustomobject]@{
         CodexRunning = ($null -ne $codex)
         SnipasteRunning = ($null -ne $snipaste)
@@ -512,6 +689,7 @@ if ($SelfTest) {
         BackgroundRunning = ($null -ne $bridgeProcess)
         LightweightExeReady = (Test-Path -LiteralPath $bridgeExe)
         StartupShortcutReady = (Test-Path -LiteralPath $shortcutPath)
+        DictationControlFound = $dictationControlFound
     }
     exit
 }
